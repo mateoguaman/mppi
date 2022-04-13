@@ -1,4 +1,6 @@
 import torch
+import numpy as np
+import matplotlib.pyplot as plt
 
 class Model:
     def __init__(self):
@@ -16,7 +18,7 @@ class Model:
     def control_dim(self):
         pass
 
-def KinematicBycicle(Model):
+class KinematicBycicle(Model):
     '''Kinematic model of a car with front wheel steering.
 
     Assumes no slip, combines rear and front wheels into a single rear and a single front wheel. Assumes center of gravity of the vehicle is in the middle of the rear axle. 
@@ -147,3 +149,76 @@ def KinematicBycicle(Model):
     def control_dim(self):
         '''Returns size of control: 2'''
         return 2
+
+def main():
+    env = np.zeros((100, 100))
+
+    x0 = torch.Tensor([2, 0, 1.57, 1])
+
+    # Initialize model and model parameters
+    L = 1.0
+    dt = 0.01
+    u_max = torch.Tensor([10, torch.pi/2])
+    u_min = torch.Tensor([0, -torch.pi/2])
+
+    model = KinematicBycicle(L, dt, u_max, u_min)
+
+    # Test functions
+    u = torch.Tensor([4, -0.1])
+    x_dot = model.dynamics(x0, u)
+    print("=====")
+    print(f"Testing model dynamics: ")
+    print(f"Input. x: {x0}, u: {u}")
+    print(f"x_dot: {x_dot}")
+
+    x_next = model.discrete_dynamics(x0, u)
+    print("---")
+    print(f"Testing discrete dynamics: ")
+    print(f"x_next: {x_next}")
+
+    x_next = model.forward(x0, u)
+    print("---")
+    print(f"Testing forward: ")
+    print(f"x_next: {x_next}")
+
+    N = 200
+    u_list = [u]*N
+    times  = torch.cumsum(torch.Tensor([dt]*N), dim=0)
+    x_hist = model.rollout(x0, u_list)
+    print("---")
+    print("Testing rollout: ")
+    print(f"x_hist: {x_hist}")
+
+    n = model.state_dim()
+    print("---")
+    print("Testing state_dim: ")
+    print(f"n: {n}")
+
+    m = model.control_dim()
+    print("---")
+    print("Testing control_dim: ")
+    print(f"m: {m}")
+
+    pos_x = [x_hist[i][0] for i in range(len(x_hist))]
+    pos_y = [x_hist[i][1] for i in range(len(x_hist))]
+
+    fig = plt.figure()
+    fig.suptitle('Kinematic Bicycle Model demo')
+    path_subplot = fig.add_subplot(1,1,1)
+
+    for i in range(1, len(pos_x)):
+
+        x_vals = pos_x[:i]
+        y_vals = pos_y[:i]
+
+        path_subplot.clear()
+        path_subplot.grid()
+        path_subplot.set_xlim([-5, 5])
+        path_subplot.set_ylim([-5, 5])
+        path_subplot.plot(x_vals, y_vals, c='blue')
+        path_subplot.scatter(x_vals[0], y_vals[0], c='red', marker='o')
+        path_subplot.scatter(x_vals[i-1], y_vals[i-1], c='green', marker='x')
+        plt.pause(dt)
+
+if  __name__=="__main__":
+    main()
