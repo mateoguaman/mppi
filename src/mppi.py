@@ -32,8 +32,6 @@ class MPPI:
         self.sys_noise = control_params.sys_noise  # Equivalent to sigma in [1]
         self.temperature = control_params.temperature  # Equivalent to lambda in [1]
 
-
-
     def get_control(self, x):
         '''Returns action u at current state x
 
