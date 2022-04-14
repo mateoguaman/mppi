@@ -45,7 +45,6 @@ class CostFunction:
             cost:
                 Float representing the stage cost (non-terminal cost) of the current state and action pair
         ''' 
-        # import pdb;pdb.set_trace()
         # Get (x,y) positions from state
         if len(state.shape) == 1:
             world_pos = torch.Tensor(state[:2])
@@ -55,11 +54,13 @@ class CostFunction:
         # Get grid indices in costmap from world positions
         grid_pos, invalid_mask = self.world_to_grid(world_pos)
 
-        # Reverse grid axes to align with robot centric axes: +x forward, +y left
-        grid_pos = grid_pos.swapaxes(-1, -2)
+        # Switch grid axes to align with robot centric axes: +x forward, +y left
+        grid_pos = torch.index_select(grid_pos, 1, torch.LongTensor([1, 0]))
 
         # Assign invalid costmap indices to a temp value and then set them to invalid cost
         grid_pos[invalid_mask] = 0.0
+        grid_pos = grid_pos.long()
+
         if len(state.shape) == 1:
             cost = self.costmap[grid_pos[0], grid_pos[1]]
         else:    
@@ -70,11 +71,8 @@ class CostFunction:
         return cost
         
     def termcost(self, state):
-        pass
-    def batch_stagecost(self, states, actions):
-        pass
-    def batch_termcost(self, states):
-        pass
+        cost = self.stagecost(state, None)
+        return cost
 
     def world_to_grid(self, world_pos):
         '''Converts the world position (x,y) into indices that can be used to access the costmap.
@@ -90,7 +88,8 @@ class CostFunction:
         origin = torch.Tensor(self.map_params['origin'])
 
         grid_pos = ((world_pos - origin)/res).to(torch.int32)
-        import pdb;pdb.set_trace()
+        # import pdb;pdb.set_trace()
+
         # Obtain mask of invalid grid locations in pixel space
         grid_min = torch.Tensor([0, 0])
         grid_max = torch.Tensor(list(self.costmap.shape))
@@ -108,8 +107,8 @@ if __name__=="__main__":
     height = 10
     width  = 10
     resolution  = 0.05
-    # origin = [-5.0, -5.0]
-    origin = [0.0, 0.0]
+    origin = [0.0, -5.0]
+    # origin = [0.0, 0.0]
 
     map_params = {
         'height': height,
@@ -143,7 +142,7 @@ if __name__=="__main__":
     print(f"Output is \n{grid_pos}")
 
     ## 4. Verify that stagecost works
-    state = torch.Tensor([[0.0, 0.0, 0.0, 0.0], [5.0, 5.0, 0.0, 0.0], [100.0, 100.0, 0.0, 0.0], [-1.0, 3.0, 0.0, 0.0]])
+    state = torch.Tensor([[0.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0], [2.0, 0.0, 0.0, 0.0], [5.0, 1.0, 0.0, 0.0]])
     action = torch.Tensor([0.0, 0.0])
     cost = cost_fn.stagecost(state, action)
     
