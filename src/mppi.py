@@ -1,4 +1,5 @@
 import torch
+from torch.distributions import multivariate_normal
 import numpy as np
 from model import KinematicBycicle
 from cost import CostFunction
@@ -41,6 +42,11 @@ class MPPI:
         self.sys_noise = control_params["sys_noise"]  # Equivalent to sigma in [1]
         self.temperature = control_params["temperature"]  # Equivalent to lambda in [1]
 
+        mean = torch.zeros(self.m).cuda()
+        self.sigma = torch.diagflat(self.sys_noise).cuda()
+
+        self.control_noise_dist = multivariate_normal.MultivariateNormal(loc=mean, covariance_matrix=self.sigma)
+
     def get_control(self, x):
         '''Returns action u at current state x
 
@@ -65,13 +71,12 @@ class MPPI:
             cost = 0
             x_hist = []
             x_hist.append(x)
-            sigma = self.sys_noise * torch.eye(self.m)
             for t in range(1, self.T):
                 u_t = self.last_controls[t-1]
                 w_t = noise[t-1]
                 x_t = self.model.forward(x_hist[t-1], u_t + w_t)
                 x_hist.append(x_t)
-                cost += (self.cost_fn.stagecost(x_t, u_t) + self.temperature*torch.matmul(u_t.view(1,-1), torch.matmul(torch.linalg.inv(sigma), w_t.view(-1,1))).item())
+                cost += (self.cost_fn.stagecost(x_t, u_t) + self.temperature*torch.matmul(u_t.view(1,-1), torch.matmul(torch.linalg.inv(self.sigma), w_t.view(-1,1))).item())
 
             cost +=  self.cost_fn.termcost(x_hist[-1])
 
@@ -114,7 +119,8 @@ class MPPI:
                 Cost from executing the optimal action sequence. Float.
         '''
         ## 1. Simulate K rollouts and get costs for each rollout
-        control_noise = torch.normal(mean=0.0, std=self.sys_noise, size=(self.K, self.T, self.m)).cuda()
+        # control_noise = torch.normal(mean=0.0, std=self.sys_noise, size=(self.K, self.T, self.m)).cuda()
+        control_noise = self.control_noise_dist.sample(sample_shape=(self.K, self.T)).cuda()
 
         x_hist = torch.zeros(self.K, self.T, self.n).cuda()
         x_hist[:,0,:] = x
@@ -122,7 +128,7 @@ class MPPI:
         u_hist = self.last_controls.unsqueeze(0).repeat(self.K, 1, 1).cuda()
 
         costs = torch.zeros(self.K).cuda()
-        sigma = self.sys_noise * torch.eye(self.m).cuda()
+        # sigma = self.sys_noise * torch.eye(self.m).cuda()
         for t in range(1, self.T):
             x_prev = x_hist[:,t-1,:]
             u_prev = u_hist[:,t-1,:]
@@ -131,7 +137,7 @@ class MPPI:
             x_t = self.model.forward(x_prev, u_prev+w_prev)
             x_hist[:,t,:] = x_t
 
-            control_penalty = self.temperature*(torch.matmul(u_prev.view(-1, self.m, 1).transpose(1,2), torch.linalg.solve(sigma.unsqueeze(0), w_prev.view(-1, self.m, 1)))).squeeze().cuda()
+            control_penalty = self.temperature*(torch.matmul(u_prev.view(-1, self.m, 1).transpose(1,2), torch.linalg.solve(self.sigma.unsqueeze(0), w_prev.view(-1, self.m, 1)))).squeeze().cuda()
 
             costs += (self.cost_fn.stagecost(x_t, u_prev) + control_penalty)
 
@@ -206,8 +212,8 @@ def main():
     num_samples = 1024
     num_timesteps = int(2.5*1/dt)
     control_params = {
-        'sys_noise': 2.5,
-        'temperature': 1
+        'sys_noise': torch.Tensor([1, 0.1]),
+        'temperature': 0.01
     }
     controller = MPPI(model, cost_fn, num_samples, num_timesteps, control_params)
 
