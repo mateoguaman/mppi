@@ -18,13 +18,16 @@ class CostFunction:
                 'resolution': Float [m],
                 'origin': [Float, Float] [m]
             }
+        goal:
+            Tensor(2,) containing the goal position [x_g, y_g] in world coordinates
     '''
-    def __init__(self, costmap, map_params):
+    def __init__(self, costmap, map_params, goal=None):
         self.costmap = costmap
         self.map_params = map_params
+        self.goal = goal
 
         self.invalid_cost = 1000000
-    def update(self, costmap):
+    def update_costmap(self, costmap):
         '''Updates the costmap to be queried.
 
         Args:
@@ -33,45 +36,90 @@ class CostFunction:
         '''
         self.costmap = costmap
 
+    def update_goal(self, goal):
+        '''Updates the goal to be used for distance-to-goal cost
+
+        Args:
+            goal:
+                Tensor(2,) containing the goal position [x_g, y_g] in world coordinates
+        '''
+        self.goal = goal
+
     def stagecost(self, state, action):
-        '''Queries the costmap at the input state.
+        '''Stage cost: Queries the costmap at the input state and adds cost based on distance to goal
         
         Args:
             state:
-                Tensor(4,) containing state of the vehicle [x, y, theta, delta]
+                Tensor(4,) or Tensor(K, 4) containing state of the vehicle [x, y, theta, delta]
             action:
-                Tensor(2,) containing the input control to the vehicle [v, phi]
+                Tensor(2,) or Tensor(K, 2) containing the input control to the vehicle [v, phi]
         Returns:
             cost:
-                Float representing the stage cost (non-terminal cost) of the current state and action pair
+                Float or Tensor(K, 1) representing the stage cost (non-terminal cost) of the current state and action pair
         ''' 
+        cost = 0.0
         # Get (x,y) positions from state
         if len(state.shape) == 1:
             world_pos = torch.Tensor(state[:2])
+            if self.goal is not None:
+                goal_cost = torch.linalg.vector_norm(world_pos - self.goal)
         else:
             world_pos = torch.Tensor(state[:,:2])
+            if self.goal is not None:
+                goal_cost = torch.linalg.vector_norm(world_pos - self.goal, dim=1)
         
         # Get grid indices in costmap from world positions
         grid_pos, invalid_mask = self.world_to_grid(world_pos)
 
         # Switch grid axes to align with robot centric axes: +x forward, +y left
-        grid_pos = torch.index_select(grid_pos, 1, torch.LongTensor([1, 0]))
+        if len(state.shape) == 1:
+            grid_pos = torch.Tensor([grid_pos[1], grid_pos[0]])
+        else:
+            grid_pos = torch.index_select(grid_pos, 1, torch.LongTensor([1, 0]))
 
         # Assign invalid costmap indices to a temp value and then set them to invalid cost
         grid_pos[invalid_mask] = 0.0
         grid_pos = grid_pos.long()
 
         if len(state.shape) == 1:
-            cost = self.costmap[grid_pos[0], grid_pos[1]]
+            cost = torch.clone(self.costmap[grid_pos[0], grid_pos[1]])
         else:    
-            cost = self.costmap[grid_pos[:,0], grid_pos[:,1]]
+            cost = torch.clone(self.costmap[grid_pos[:,0], grid_pos[:,1]])
+
+        if self.goal is not None:
+            cost += goal_cost
 
         cost[invalid_mask] = self.invalid_cost
+
+        if len(state.shape) == 1:
+            cost = cost.item()
 
         return cost
         
     def termcost(self, state):
-        cost = self.stagecost(state, None)
+        '''Termination cost: Cost based on distance to goal.
+
+        Args:
+            state:
+                Tensor(4,) or Tensor(K, 4) containing state of the vehicle [x, y, theta, delta]
+            goal:
+                Tensor(2,) containing the goal position [x_g, y_g] in world coordinates
+        Returns:
+            cost:
+                Float or Tensor(K, 1) representing the terminal cost of the state input
+        '''
+        if len(state.shape) == 1:
+            world_pos = torch.Tensor(state[:2])
+            if torch.linalg.vector_norm(world_pos - self.goal).item() < 1:
+                cost = 0
+            else:
+                cost = 10
+        else:
+            world_pos = torch.Tensor(state[:,:2])
+            goal_mask = torch.linalg.vector_norm(world_pos - self.goal, dim=1) < 0.5
+            cost = torch.zeros(world_pos.shape[0])
+            cost[~goal_mask] = 10
+
         return cost
 
     def world_to_grid(self, world_pos):
@@ -88,7 +136,6 @@ class CostFunction:
         origin = torch.Tensor(self.map_params['origin'])
 
         grid_pos = ((world_pos - origin)/res).to(torch.int32)
-        # import pdb;pdb.set_trace()
 
         # Obtain mask of invalid grid locations in pixel space
         grid_min = torch.Tensor([0, 0])
@@ -107,7 +154,7 @@ if __name__=="__main__":
     height = 10
     width  = 10
     resolution  = 0.05
-    origin = [0.0, -5.0]
+    origin = [0.0, 0.0]
     # origin = [0.0, 0.0]
 
     map_params = {
@@ -126,28 +173,39 @@ if __name__=="__main__":
     map_width_third  = int(width/(3*resolution))
     costmap[map_height_third:2*map_height_third, map_width_third:2*map_width_third] = 3 + np.random.randn(map_height_third, map_width_third)
 
-    # import pdb;pdb.set_trace()
     costmap = torch.from_numpy(costmap)
 
     ## 3. Initialize CostFunction object
-    cost_fn = CostFunction(costmap, map_params)
+    goal   = torch.Tensor([5.0, 5.0])
+    cost_fn = CostFunction(costmap, map_params, goal)
 
     ## 3. Verify that world_to_grid works:
     world_pts = torch.Tensor([[1.0, 0.0], [1.0, 1.0], [2.0, 3.2]])
-    grid_pos, invalid_mask = cost_fn.world_to_grid(world_pts)
+    # grid_pos, invalid_mask = cost_fn.world_to_grid(world_pts)
 
-    print("=====")
-    print("Checking grid_pos: ")
-    print(f"Input is \n{world_pts}")
-    print(f"Output is \n{grid_pos}")
+    # print("=====")
+    # print("Checking grid_pos: ")
+    # print(f"Input is \n{world_pts}")
+    # print(f"Output is \n{grid_pos}")
 
     ## 4. Verify that stagecost works
-    state = torch.Tensor([[0.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0], [2.0, 0.0, 0.0, 0.0], [5.0, 1.0, 0.0, 0.0]])
+    # state  = torch.Tensor([[0.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0], [2.0, 0.0, 0.0, 0.0], [5.0, 1.0, 0.0, 0.0], [5.0, 5.0, 0.0, 0.0]])
+    state = torch.Tensor([1.0, 0.0, 0.0, 0.0])
     action = torch.Tensor([0.0, 0.0])
+    
+    for i in range(10):
+        print(f"Iteration: {i}")
+        cost = cost_fn.stagecost(state, action)
+        print(cost)
     cost = cost_fn.stagecost(state, action)
     
     print("---")
     print(f"Input states are: ")
     print(state)
-    print(f"Costs for states are: ")
+    print(f"Stage costs for states are: ")
+    print(cost)
+
+    cost = cost_fn.termcost(state)
+    print("---")
+    print(f"Term costs for states are: ")
     print(cost)
