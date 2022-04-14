@@ -49,26 +49,33 @@ class KinematicBycicle(Model):
         
         Args:
             x:
-                State of the vehicle. Expects Tensor(4,).
+                State of the vehicle. Expects Tensor(4,) or Tensor(K, 4).
             u:
-                Input control. Expects Tensor(2,).
+                Input control. Expects Tensor(2,) or Tensor(K, 2).
 
         Returns:
             x_dot:
-                Time derivative of the state. Tensor(4,).
+                Time derivative of the state. Tensor(4,) or Tensor(K, 4).
         '''
-        px    = x[0]  # Position in x
-        py    = x[1]  # Position in y
-        theta = x[2]  # Yaw angle
-        delta = x[3]  # Steering angle
-        v     = u[0]  # forward velocity
-        phi   = u[1]  # Steering angle rate
+        if len(x.shape) == 1:
+            px    = x[0]  # Position in x
+            py    = x[1]  # Position in y
+            theta = x[2]  # Yaw angle
+            delta = x[3]  # Steering angle
+            v     = u[0]  # forward velocity
+            phi   = u[1]  # Steering angle rate
 
-        x_dot = v*torch.cos(theta)
-        y_dot = v*torch.sin(theta)
-        omega = v*torch.tan(delta)/self.L
-        
-        x_dot = torch.Tensor([x_dot, y_dot, omega, phi]) 
+            px_dot = v*torch.cos(theta)
+            py_dot = v*torch.sin(theta)
+            omega = v*torch.tan(delta)/self.L
+            
+            x_dot = torch.Tensor([px_dot, py_dot, omega, phi]) 
+        else:
+            px_dot = u[:,[0]]*torch.cos(x[:,[2]])
+            py_dot = u[:,[0]]*torch.sin(x[:,[2]])
+            omega  = u[:,[0]]*torch.tan(x[:,[3]])/self.L
+
+            x_dot  = torch.cat([px_dot, py_dot, omega, u[:,[1]]], dim=1)
 
         return x_dot
 
@@ -79,13 +86,13 @@ class KinematicBycicle(Model):
 
         Args:
             x:
-                State of the vehicle. Expects Tensor(4,).
+                State of the vehicle. Expects Tensor(4,) or Tensor(K, 4).
             u:
-                Input control. Expects Tensor(2,).
+                Input control. Expects Tensor(2,) or Tensor(K, 2).
 
         Returns:
             x_next:
-                Next state of the vehicle. Tensor(4,).
+                Next state of the vehicle. Tensor(4,) or Tensor(K, 4).
         '''
 
         k1 = self.dynamics(x, u)
@@ -97,6 +104,7 @@ class KinematicBycicle(Model):
 
         return x_next
 
+
     def forward(self, x, u):
         '''Simulates one step of the model.
 
@@ -104,13 +112,13 @@ class KinematicBycicle(Model):
 
         Args:
             x:
-                State of the vehicle. Expects Tensor(4,).
+                State of the vehicle. Expects Tensor(4,) or Tensor(K, 4).
             u:
-                Input control. Expects Tensor(2,).
+                Input control. Expects Tensor(2,) or Tensor(K, 2).
 
         Returns:
             x_next:
-                Next state of the vehicle. Tensor(4,).
+                Next state of the vehicle. Tensor(4,) or Tensor(K, 4).
         '''
         u = torch.max(torch.min(u, self.u_max), self.u_min)
 
@@ -171,15 +179,61 @@ def main():
     print(f"Input. x: {x0}, u: {u}")
     print(f"x_dot: {x_dot}")
 
+
+    x_batch = torch.Tensor([
+        [0.0, 0.0, 1.0, 0.1],
+        [2.0, 0.0, 1.57, 1.0],
+        [3.0, 2.0, 0.1, 0.2],
+        [5.0, 7.0, 1.3, 0.5],
+        [3.1, 2.2, 1.1, 0.3]
+    ])
+
+    u_batch = torch.Tensor([
+        [1.2, 0.0],
+        [4.0, -0.1],
+        [2.2, 1.0],
+        [0.0, 1.1],
+        [1.2, 3.4]
+    ])
+
+    x_dot = model.dynamics(x_batch, u_batch)
+    print("=====")
+    print(f"Testing batched model dynamics: ")
+    print("Input state:")
+    print(x_batch)
+    print("Input control:")
+    print(u_batch)
+    print("x_dot: ")
+    print(x_dot)
+
     x_next = model.discrete_dynamics(x0, u)
     print("---")
     print(f"Testing discrete dynamics: ")
     print(f"x_next: {x_next}")
 
+    x_next = model.discrete_dynamics(x_batch, u_batch)
+    print("---")
+    print(f"Testing batched discrete dynamics: ")
+    print("Input state:")
+    print(x_batch)
+    print("Input control:")
+    print(u_batch)
+    print("x_next: ")
+    print(x_next)
+
     x_next = model.forward(x0, u)
     print("---")
     print(f"Testing forward: ")
     print(f"x_next: {x_next}")
+
+    x_next = model.forward(x_batch, u_batch)
+    print("---")
+    print("Testing batched forward")
+    print(x_batch)
+    print("Input control:")
+    print(u_batch)
+    print("x_next: ")
+    print(x_next)
 
     N = 200
     u_list = [u]*N
