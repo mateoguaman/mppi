@@ -41,8 +41,8 @@ class KinematicBycicle(Model):
         super(KinematicBycicle, self).__init__() 
         self.L = L  
         self.dt = dt
-        self.u_max = u_max
-        self.u_min = u_min
+        self.u_max = u_max.cuda()
+        self.u_min = u_min.cuda()
 
     def dynamics(self, x, u):
         '''Continuous dynamics.
@@ -69,13 +69,13 @@ class KinematicBycicle(Model):
             py_dot = v*torch.sin(theta)
             omega = v*torch.tan(delta)/self.L
             
-            x_dot = torch.Tensor([px_dot, py_dot, omega, phi]) 
+            x_dot = torch.Tensor([px_dot, py_dot, omega, phi]).cuda()
         else:
             px_dot = u[:,[0]]*torch.cos(x[:,[2]])
             py_dot = u[:,[0]]*torch.sin(x[:,[2]])
             omega  = u[:,[0]]*torch.tan(x[:,[3]])/self.L
 
-            x_dot  = torch.cat([px_dot, py_dot, omega, u[:,[1]]], dim=1)
+            x_dot  = torch.cat([px_dot, py_dot, omega, u[:,[1]]], dim=1).cuda()
 
         return x_dot
 
@@ -94,13 +94,15 @@ class KinematicBycicle(Model):
             x_next:
                 Next state of the vehicle. Tensor(4,) or Tensor(K, 4).
         '''
+        x = x.cuda()
+        u = u.cuda()
 
         k1 = self.dynamics(x, u)
         k2 = self.dynamics(x + 1/2*self.dt*k1, u)
         k3 = self.dynamics(x + 1/2*self.dt*k2, u)
         k4 = self.dynamics(x + self.dt*k3, u)
 
-        x_next = x + self.dt/6*(k1 + 2*k2 + 2*k3 + k4)
+        x_next = (x + self.dt/6*(k1 + 2*k2 + 2*k3 + k4)).cuda()
 
         return x_next
 
@@ -120,9 +122,9 @@ class KinematicBycicle(Model):
             x_next:
                 Next state of the vehicle. Tensor(4,) or Tensor(K, 4).
         '''
-        u = torch.max(torch.min(u, self.u_max), self.u_min)
+        u = torch.max(torch.min(u, self.u_max), self.u_min).cuda()
 
-        x_next = self.discrete_dynamics(x, u)
+        x_next = self.discrete_dynamics(x, u).cuda()
 
         return x_next
 
