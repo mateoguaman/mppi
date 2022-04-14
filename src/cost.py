@@ -88,7 +88,7 @@ class CostFunction:
             cost = torch.clone(self.costmap[grid_pos[:,0], grid_pos[:,1]]).cuda()
 
         if self.goal is not None:
-            cost += goal_cost
+            cost += 0.1*goal_cost
 
         cost[invalid_mask] = self.invalid_cost
 
