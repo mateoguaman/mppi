@@ -140,8 +140,8 @@ def main():
     # Add high cost in the middle of cost function to do "barrel test"
     map_height_third = int(height/(3*resolution))
     map_width_third  = int(width/(3*resolution))
-    costmap[map_height_third:2*map_height_third, map_width_third:2*map_width_third] = 3 + np.random.randn(map_height_third, map_width_third)
-    # costmap[map_height_third:, map_width_third:] = 3 + np.random.randn(2*map_height_third+2, 2*map_width_third+2)
+    # costmap[map_height_third:2*map_height_third, map_width_third:2*map_width_third] = 3 + np.random.randn(map_height_third, map_width_third)
+    costmap[map_height_third:, map_width_third:] = 3 + np.random.randn(2*map_height_third+2, 2*map_width_third+2)
 
     costmap = torch.from_numpy(costmap)
     
@@ -173,7 +173,7 @@ def main():
 
     achieved_goal = False
     while (iter < max_iters) and (not achieved_goal):
-        fig.suptitle(f'MPPI demo. Iteration {iter}')
+        fig.suptitle(f'MPPI demo. Step {iter}')
         print("---")
         print(f"Iteration: {iter}")
         start = timer()
@@ -190,7 +190,7 @@ def main():
         x_hist.append(x)
         u_hist.append(u)
 
-        if torch.linalg.vector_norm(x[:2] - goal) <= 0.5:
+        if torch.linalg.vector_norm(x[:2] - goal) <= 0.2:
             achieved_goal=True
 
         pos_x = [x_hist[i][0].cpu().item() for i in range(len(x_hist))]
@@ -205,11 +205,16 @@ def main():
         path_subplot.grid()
         path_subplot.set_xlim([0, costmap.shape[0]])
         path_subplot.set_ylim([0, costmap.shape[1]])
+        path_subplot.set_xlabel("X position")
+        path_subplot.set_ylabel("Y position")
         path_subplot.imshow(costmap.cpu().numpy())
-        path_subplot.plot(x_vals, y_vals, c='blue')
-        path_subplot.scatter(x_vals[0], y_vals[0], c='red', marker='o')
-        path_subplot.scatter(x_vals[iter], y_vals[iter], c='green', marker='x')
-        path_subplot.scatter(int((goal[0]-origin[0])/resolution), int((goal[1]-origin[1])/resolution), c='cyan', marker='s')
+        path_subplot.plot(x_vals, y_vals, c='blue', label="Robot's path")
+        path_subplot.scatter(x_vals[0], y_vals[0], c='red', marker='o', label="Start Position")
+        path_subplot.scatter(x_vals[iter], y_vals[iter], c='green', marker='x', label="Current Position")
+        path_subplot.scatter(int((goal[0]-origin[0])/resolution), int((goal[1]-origin[1])/resolution), c='cyan', marker='s', label="Goal Position")
+        path_subplot.legend()
+        if iter == 0:
+            plt.pause(10)
         plt.pause(dt)
 
         iter += 1
@@ -219,11 +224,14 @@ def main():
     path_subplot.grid()
     path_subplot.set_xlim([0, costmap.shape[0]])
     path_subplot.set_ylim([0, costmap.shape[1]])
+    path_subplot.set_xlabel("X position")
+    path_subplot.set_ylabel("Y position")
     path_subplot.imshow(costmap.cpu().numpy())
-    path_subplot.plot(x_vals, y_vals, c='blue')
-    path_subplot.scatter(x_vals[0], y_vals[0], c='red', marker='o')
-    path_subplot.scatter(x_vals[iter], y_vals[iter], c='green', marker='x')
-    path_subplot.scatter(int((goal[0]-origin[0])/resolution), int((goal[1]-origin[1])/resolution), c='cyan', marker='s')
+    path_subplot.plot(x_vals, y_vals, c='blue', label="Robot's path")
+    path_subplot.scatter(x_vals[0], y_vals[0], c='red', marker='o', label="Start Position")
+    path_subplot.scatter(x_vals[iter], y_vals[iter], c='green', marker='x', label="Current Position")
+    path_subplot.scatter(int((goal[0]-origin[0])/resolution), int((goal[1]-origin[1])/resolution), c='cyan', marker='s', label="Goal Position")
+    path_subplot.legend()
     plt.show()
 
 
