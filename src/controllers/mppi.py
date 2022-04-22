@@ -1,14 +1,18 @@
+from datetime import timedelta
+from timeit import default_timer as timer
 import torch
 from torch.distributions import multivariate_normal
-import numpy as np
-from model import KinematicBycicle
-from cost import CostFunction
 import matplotlib.pyplot as plt
+import numpy as np
 
-from timeit import default_timer as timer
-from datetime import timedelta
 
-class MPPI:
+from controllers.base import Controller
+from models.kbm import KinematicBycicle
+from cost_functions.cost_manager import CostManager
+from cost_functions.costmap import Costmap
+from cost_functions.goal_cost import GoalCost
+
+class MPPI(Controller):
     '''MPPI controller based on Algorithm 2 in [1].
     
     [1] Williams, Grady, et al. "Information theoretic MPC for model-based reinforcement learning." 2017 IEEE International Conference on Robotics and Automation (ICRA). IEEE, 2017.
@@ -27,22 +31,22 @@ class MPPI:
             {'sys_noise': Tensor(2,), 
             'temperature'" Float}
     '''
-    def __init__(self, model, cost_fn, num_samples, num_timesteps, control_params):
+    def __init__(self, model, cost_fn, num_samples, num_timesteps, control_params, device="cpu"):
         self.model = model
         self.cost_fn = cost_fn
         self.K = num_samples
         self.T = num_timesteps
+        self.sys_noise = control_params["sys_noise"]  # Equivalent to sigma in [1]
+        self.temperature = control_params["temperature"]  # Equivalent to lambda in [1]
+        self.device = device
 
         self.n = self.model.state_dim()
         self.m = self.model.control_dim()
 
-        self.last_controls = torch.zeros(self.T, self.m).cuda()
+        self.last_controls = torch.zeros(self.T, self.m).to(self.device)
 
-        self.sys_noise = control_params["sys_noise"]  # Equivalent to sigma in [1]
-        self.temperature = control_params["temperature"]  # Equivalent to lambda in [1]
-
-        mean = torch.zeros(self.m).cuda()
-        self.sigma = torch.diagflat(self.sys_noise).cuda()
+        mean = torch.zeros(self.m).to(self.device)
+        self.sigma = torch.diagflat(self.sys_noise).to(self.device)
 
         self.control_noise_dist = multivariate_normal.MultivariateNormal(loc=mean, covariance_matrix=self.sigma)
 
@@ -60,25 +64,27 @@ class MPPI:
             cost: 
                 Cost from executing the optimal action sequence. Float.
         '''
+        x = x.to(self.device)
+
         ## 1. Simulate K rollouts and get costs for each rollout
-        control_noise = self.control_noise_dist.sample(sample_shape=(self.K, self.T)).cuda()
+        control_noise = self.control_noise_dist.sample(sample_shape=(self.K, self.T)).to(self.device)
 
-        x_hist = torch.zeros(self.K, self.T, self.n).cuda()
+        x_hist = torch.zeros(self.K, self.T, self.n).to(self.device)
         x_hist[:,0,:] = x
-        u_hist = self.last_controls.unsqueeze(0).repeat(self.K, 1, 1).cuda()
+        u_hist = self.last_controls.unsqueeze(0).repeat(self.K, 1, 1).to(self.device)
 
-        costs = torch.zeros(self.K).cuda()
+        costs = torch.zeros(self.K).to(self.device)
 
         for t in range(1, self.T):
             x_prev = x_hist[:,t-1,:]
             u_prev = u_hist[:,t-1,:]
             w_prev = control_noise[:,t-1,:]
 
-            x_t = self.model.forward(x_prev, u_prev+w_prev)
+            x_t = self.model.step(x_prev, u_prev+w_prev)
             x_hist[:,t,:] = x_t
 
-            control_penalty = self.temperature*(torch.matmul(u_prev.view(-1, self.m, 1).transpose(1,2), torch.linalg.solve(self.sigma.unsqueeze(0), w_prev.view(-1, self.m, 1)))).squeeze().cuda()
-
+            control_penalty = self.temperature*(torch.matmul(u_prev.view(-1, self.m, 1).transpose(1,2), torch.linalg.solve(self.sigma.unsqueeze(0), w_prev.view(-1, self.m, 1)))).squeeze().to(self.device)
+            # import pdb;pdb.set_trace()
             costs += (self.cost_fn.stagecost(x_t, u_prev) + control_penalty)
 
         costs += self.cost_fn.termcost(x_hist[:,-1,:])
@@ -121,10 +127,12 @@ def main():
     model = KinematicBycicle(L, dt, u_max, u_min)
 
     # Initialize cost function
+    ## 1. Instantiate costmap function
     height = 10
     width  = 10
     resolution  = 0.05
     origin = [0.0, 0.0]
+    # origin = [0.0, 0.0]
 
     map_params = {
         'height': height,
@@ -137,26 +145,38 @@ def main():
 
     costmap = np.zeros((map_size))
 
-    # Add high cost in the middle of cost function to do "barrel test"
+    ## 2. Add high cost in the middle of cost function to do "barrel test"
     map_height_third = int(height/(3*resolution))
     map_width_third  = int(width/(3*resolution))
-    # costmap[map_height_third:2*map_height_third, map_width_third:2*map_width_third] = 3 + np.random.randn(map_height_third, map_width_third)
-    costmap[map_height_third:, map_width_third:] = 3 + np.random.randn(2*map_height_third+2, 2*map_width_third+2)
+    costmap[map_height_third:2*map_height_third, map_width_third:2*map_width_third] = 3 + np.random.randn(map_height_third, map_width_third)
 
     costmap = torch.from_numpy(costmap)
-    
-    goal = torch.Tensor([9.0, 9.0]).cuda()
-    # Initialize CostFunction object
-    cost_fn = CostFunction(costmap, map_params, goal)
+
+    ## Initialize Costmap object
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    costmap_fn = Costmap(costmap, map_params, device)
+
+
+    ## 2. Initialize CostFunction object
+    goal   = torch.Tensor([9.0, 7.0])
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    goalcost_fn = GoalCost(goal, threshold=0.5, fail_cost=10, device=device)
+
+
+    ## 3. Initialize cost manager
+    cost_functions = [costmap_fn, goalcost_fn]
+    stagecost_weights = torch.Tensor([1, 0.5])
+    termcost_weights = torch.Tensor([1, 5])
+    cost_fn = CostManager(cost_functions, stagecost_weights, termcost_weights, device=device)
 
     # Initialize controller
     num_samples = 1024
-    num_timesteps = int(2.5*1/dt)
+    num_timesteps = int(5*1/dt)
     control_params = {
         'sys_noise': torch.Tensor([1, 0.1]),
         'temperature': 0.01
     }
-    controller = MPPI(model, cost_fn, num_samples, num_timesteps, control_params)
+    controller = MPPI(model, cost_fn, num_samples, num_timesteps, control_params, device)
 
     max_iters = 10000
     iter = 0
@@ -185,17 +205,19 @@ def main():
         print(x)
         print(f"Chosen control is: ")
         print(u)
-        x = model.forward(x, u)
+        x = model.step(x, u)
 
         x_hist.append(x)
         u_hist.append(u)
 
-        if torch.linalg.vector_norm(x[:2] - goal) <= 0.2:
+        # TODO: Check if necessary on real robot
+        world_pos = torch.Tensor([x[1], x[0]])
+        if torch.linalg.vector_norm(world_pos - goal) <= goalcost_fn.threshold:
             achieved_goal=True
 
         pos_x = [x_hist[i][0].cpu().item() for i in range(len(x_hist))]
         pos_y = [x_hist[i][1].cpu().item() for i in range(len(x_hist))]
-        grid_pos,_ = cost_fn.world_to_grid(torch.cat([torch.Tensor(pos_x).view(-1,1), torch.Tensor(pos_y).view(-1,1)], dim=1))
+        grid_pos,_ = costmap_fn.world_to_grid(torch.cat([torch.Tensor(pos_x).view(-1,1), torch.Tensor(pos_y).view(-1,1)], dim=1))
         x_vals = grid_pos[:,1].cpu().numpy()
         y_vals = grid_pos[:,0].cpu().numpy()
 
@@ -213,12 +235,15 @@ def main():
         path_subplot.scatter(x_vals[iter], y_vals[iter], c='green', marker='x', label="Current Position")
         path_subplot.scatter(int((goal[0]-origin[0])/resolution), int((goal[1]-origin[1])/resolution), c='cyan', marker='s', label="Goal Position")
         path_subplot.legend()
-        if iter == 0:
-            plt.pause(10)
+        # if iter == 0:
+        #     plt.pause(10)
         plt.pause(dt)
 
         iter += 1
-    
+    if achieved_goal:
+        print("\n\n\n=====\nACHIEVED GOAL\n=====\n\n\n")
+    else:
+        print("\n\n\n=====\nFAILED: REACHED MAX ITERS\n=====\n\n\n")
     # Plot final result until it is manually closed
     path_subplot.clear()
     path_subplot.grid()

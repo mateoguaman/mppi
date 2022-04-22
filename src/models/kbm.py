@@ -2,21 +2,7 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 
-class Model:
-    def __init__(self):
-        pass
-    def dynamics(self, x, u):
-        pass
-    def discrete_dynamics(self, x, u, dt):
-        pass
-    def forward(self, x, u):
-        pass
-    def rollout(self, x, u_list):
-        pass
-    def state_dim(self):
-        pass
-    def control_dim(self):
-        pass
+from models.base import Model
 
 class KinematicBycicle(Model):
     '''Kinematic model of a car with front wheel steering.
@@ -37,12 +23,12 @@ class KinematicBycicle(Model):
         u_min:
             Minimum control limit. Expects Tensor(2,).
     '''
-    def __init__(self, L, dt, u_max, u_min):
-        super(KinematicBycicle, self).__init__() 
+    def __init__(self, L, dt, u_max, u_min, device="cpu"):
         self.L = L  
         self.dt = dt
-        self.u_max = u_max.cuda()
-        self.u_min = u_min.cuda()
+        self.device = device
+        self.u_max = u_max.to(self.device)
+        self.u_min = u_min.to(self.device)
 
     def dynamics(self, x, u):
         '''Continuous dynamics.
@@ -57,25 +43,19 @@ class KinematicBycicle(Model):
             x_dot:
                 Time derivative of the state. Tensor(4,) or Tensor(K, 4).
         '''
+
+        x = x.to(self.device)
+        u = u.to(self.device)
+
         if len(x.shape) == 1:
-            px    = x[0]  # Position in x
-            py    = x[1]  # Position in y
-            theta = x[2]  # Yaw angle
-            delta = x[3]  # Steering angle
-            v     = u[0]  # forward velocity
-            phi   = u[1]  # Steering angle rate
+            x_dot = self.dynamics(x.unsqueeze(0), u.unsqueeze(0))
+            return x_dot.squeeze()
 
-            px_dot = v*torch.cos(theta)
-            py_dot = v*torch.sin(theta)
-            omega = v*torch.tan(delta)/self.L
-            
-            x_dot = torch.Tensor([px_dot, py_dot, omega, phi]).cuda()
-        else:
-            px_dot = u[:,[0]]*torch.cos(x[:,[2]])
-            py_dot = u[:,[0]]*torch.sin(x[:,[2]])
-            omega  = u[:,[0]]*torch.tan(x[:,[3]])/self.L
+        px_dot = u[:,[0]]*torch.cos(x[:,[2]])
+        py_dot = u[:,[0]]*torch.sin(x[:,[2]])
+        omega  = u[:,[0]]*torch.tan(x[:,[3]])/self.L
 
-            x_dot  = torch.cat([px_dot, py_dot, omega, u[:,[1]]], dim=1).cuda()
+        x_dot  = torch.cat([px_dot, py_dot, omega, u[:,[1]]], dim=1)# .cuda()
 
         return x_dot
 
@@ -94,20 +74,20 @@ class KinematicBycicle(Model):
             x_next:
                 Next state of the vehicle. Tensor(4,) or Tensor(K, 4).
         '''
-        x = x.cuda()
-        u = u.cuda()
+        x = x.to(self.device)
+        u = u.to(self.device)
 
         k1 = self.dynamics(x, u)
         k2 = self.dynamics(x + 1/2*self.dt*k1, u)
         k3 = self.dynamics(x + 1/2*self.dt*k2, u)
         k4 = self.dynamics(x + self.dt*k3, u)
 
-        x_next = (x + self.dt/6*(k1 + 2*k2 + 2*k3 + k4)).cuda()
+        x_next = (x + self.dt/6*(k1 + 2*k2 + 2*k3 + k4))# .cuda()
 
         return x_next
 
 
-    def forward(self, x, u):
+    def step(self, x, u):
         '''Simulates one step of the model.
 
         Enforces control constraints.
@@ -122,9 +102,12 @@ class KinematicBycicle(Model):
             x_next:
                 Next state of the vehicle. Tensor(4,) or Tensor(K, 4).
         '''
-        u = torch.max(torch.min(u, self.u_max), self.u_min).cuda()
+        x = x.to(self.device)
+        u = u.to(self.device)
 
-        x_next = self.discrete_dynamics(x, u).cuda()
+        u = torch.max(torch.min(u, self.u_max), self.u_min)# .cuda()
+
+        x_next = self.discrete_dynamics(x, u)# .cuda()
 
         return x_next
 
@@ -142,6 +125,9 @@ class KinematicBycicle(Model):
             x_hist:
                 List of simulated states of the vehicle.
         '''
+        x = x.to(self.device)
+        u_list = [u.to(self.device) for u in u_list]
+
         x_hist = []
         x_hist.append(x)
 
@@ -171,7 +157,9 @@ def main():
     u_max = torch.Tensor([10, torch.pi/2])
     u_min = torch.Tensor([0, -torch.pi/2])
 
-    model = KinematicBycicle(L, dt, u_max, u_min)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    model = KinematicBycicle(L, dt, u_max, u_min, device)
 
     # Test functions
     u = torch.Tensor([4, -0.1])
@@ -223,14 +211,14 @@ def main():
     print("x_next: ")
     print(x_next)
 
-    x_next = model.forward(x0, u)
+    x_next = model.step(x0, u)
     print("---")
-    print(f"Testing forward: ")
+    print(f"Testing step: ")
     print(f"x_next: {x_next}")
 
-    x_next = model.forward(x_batch, u_batch)
+    x_next = model.step(x_batch, u_batch)
     print("---")
-    print("Testing batched forward")
+    print("Testing batched step")
     print(x_batch)
     print("Input control:")
     print(u_batch)
@@ -255,8 +243,8 @@ def main():
     print("Testing control_dim: ")
     print(f"m: {m}")
 
-    pos_x = [x_hist[i][0] for i in range(len(x_hist))]
-    pos_y = [x_hist[i][1] for i in range(len(x_hist))]
+    pos_x = [x_hist[i][0].cpu() for i in range(len(x_hist))]
+    pos_y = [x_hist[i][1].cpu() for i in range(len(x_hist))]
 
     fig = plt.figure()
     fig.suptitle('Kinematic Bicycle Model demo')
