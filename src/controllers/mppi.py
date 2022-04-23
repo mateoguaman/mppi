@@ -30,8 +30,12 @@ class MPPI(Controller):
             Dictionary of control parameters defined as follows:
             {'sys_noise': Tensor(2,), 
             'temperature'" Float}
+        device:
+            String of device ("cpu", "cuda") where to put tensors.
+        viz_k:
+            Integer, number of MPPI "whiskers" to visualize
     '''
-    def __init__(self, model, cost_fn, num_samples, num_timesteps, control_params, device="cpu"):
+    def __init__(self, model, cost_fn, num_samples, num_timesteps, control_params, device="cpu", viz_k=10):
         self.model = model
         self.cost_fn = cost_fn
         self.K = num_samples
@@ -39,6 +43,7 @@ class MPPI(Controller):
         self.sys_noise = control_params["sys_noise"]  # Equivalent to sigma in [1]
         self.temperature = control_params["temperature"]  # Equivalent to lambda in [1]
         self.device = device
+        self.viz_k = viz_k
 
         self.n = self.model.state_dim()
         self.m = self.model.control_dim()
@@ -49,6 +54,9 @@ class MPPI(Controller):
         self.sigma = torch.diagflat(self.sys_noise).to(self.device)
 
         self.control_noise_dist = multivariate_normal.MultivariateNormal(loc=mean, covariance_matrix=self.sigma)
+
+        # For visualization:
+        self.viz_rollouts = torch.zeros(self.K, self.T, self.n)
 
     def get_control(self, x):
         '''Returns action u at current state x
@@ -84,10 +92,14 @@ class MPPI(Controller):
             x_hist[:,t,:] = x_t
 
             control_penalty = self.temperature*(torch.matmul(u_prev.view(-1, self.m, 1).transpose(1,2), torch.linalg.solve(self.sigma.unsqueeze(0), w_prev.view(-1, self.m, 1)))).squeeze().to(self.device)
-            # import pdb;pdb.set_trace()
+
             costs += (self.cost_fn.stagecost(x_t, u_prev) + control_penalty)
 
         costs += self.cost_fn.termcost(x_hist[:,-1,:])
+        # For visualization, get MPPI "whiskers"
+        sorted_indices = torch.argsort(costs)
+        top_k_indices = sorted_indices[:self.viz_k]
+        self.viz_rollouts = x_hist[top_k_indices, :, :]
 
         ## 2. Get minimum cost and obtain normalization constant
         beta = torch.min(costs)
@@ -132,7 +144,6 @@ def main():
     width  = 10
     resolution  = 0.05
     origin = [0.0, 0.0]
-    # origin = [0.0, 0.0]
 
     map_params = {
         'height': height,
@@ -165,7 +176,7 @@ def main():
 
     ## 3. Initialize cost manager
     cost_functions = [costmap_fn, goalcost_fn]
-    stagecost_weights = torch.Tensor([1, 0.5])
+    stagecost_weights = torch.Tensor([1, 0.2])
     termcost_weights = torch.Tensor([1, 5])
     cost_fn = CostManager(cost_functions, stagecost_weights, termcost_weights, device=device)
 
@@ -205,6 +216,8 @@ def main():
         print(x)
         print(f"Chosen control is: ")
         print(u)
+        # import pdb;pdb.set_trace()
+        whiskers = controller.viz_rollouts
         x = model.step(x, u)
 
         x_hist.append(x)
@@ -230,13 +243,26 @@ def main():
         path_subplot.set_xlabel("X position")
         path_subplot.set_ylabel("Y position")
         path_subplot.imshow(costmap.cpu().numpy())
-        path_subplot.plot(x_vals, y_vals, c='blue', label="Robot's path")
+        path_subplot.plot(x_vals, y_vals, c='blue', label="Robot's path", alpha=0.5)
         path_subplot.scatter(x_vals[0], y_vals[0], c='red', marker='o', label="Start Position")
         path_subplot.scatter(x_vals[iter], y_vals[iter], c='green', marker='x', label="Current Position")
         path_subplot.scatter(int((goal[0]-origin[0])/resolution), int((goal[1]-origin[1])/resolution), c='cyan', marker='s', label="Goal Position")
-        path_subplot.legend()
-        # if iter == 0:
-        #     plt.pause(10)
+        
+        if iter == 0:
+            plt.pause(10)
+
+        for k in range(whiskers.shape[0]):
+            traj = whiskers[k]
+            traj_x = [traj[i][0].cpu().item() for i in range(traj.shape[0])]
+            traj_y = [traj[i][1].cpu().item() for i in range(traj.shape[0])]
+            traj_grid_pos,_ = costmap_fn.world_to_grid(torch.cat([torch.Tensor(traj_x).view(-1,1), torch.Tensor(traj_y).view(-1,1)], dim=1))
+            traj_x_vals = traj_grid_pos[:,1].cpu().numpy()
+            traj_y_vals = traj_grid_pos[:,0].cpu().numpy()
+            if k == 0:
+                path_subplot.plot(traj_x_vals, traj_y_vals, c='green', label="Chosen path", alpha=0.5)
+            else:
+                path_subplot.plot(traj_x_vals, traj_y_vals, c='yellow', label=f"Sample path {k}", alpha=0.3)
+        path_subplot.legend(loc="upper left")
         plt.pause(dt)
 
         iter += 1
@@ -245,6 +271,7 @@ def main():
     else:
         print("\n\n\n=====\nFAILED: REACHED MAX ITERS\n=====\n\n\n")
     # Plot final result until it is manually closed
+    fig.suptitle(f'MPPI demo. GOAL COMPLETED')
     path_subplot.clear()
     path_subplot.grid()
     path_subplot.set_xlim([0, costmap.shape[0]])
@@ -256,7 +283,7 @@ def main():
     path_subplot.scatter(x_vals[0], y_vals[0], c='red', marker='o', label="Start Position")
     path_subplot.scatter(x_vals[iter], y_vals[iter], c='green', marker='x', label="Current Position")
     path_subplot.scatter(int((goal[0]-origin[0])/resolution), int((goal[1]-origin[1])/resolution), c='cyan', marker='s', label="Goal Position")
-    path_subplot.legend()
+    path_subplot.legend(loc="upper left")
     plt.show()
 
 
